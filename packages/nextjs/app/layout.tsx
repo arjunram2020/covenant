@@ -7,7 +7,7 @@ import { Footer } from "../components/Footer";
 import { BlockchainBg } from "../components/BlockchainBg";
 
 export const metadata: Metadata = {
-  title: "Covenant — Crowdfunding with enforced accountability",
+  title: "Covenant",
   description:
     "Donations stay locked in smart-contract escrow until campaign creators post public milestone evidence on-chain. The money follows the proof.",
 };

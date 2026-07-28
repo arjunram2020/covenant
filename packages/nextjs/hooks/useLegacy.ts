@@ -40,7 +40,14 @@ export function useArchivedCampaigns() {
     }));
   });
 
-  return { ...q, campaigns };
+  // `allowFailure` deliberately keeps one retired contract with a bad RPC
+  // response from hiding the rest of Covenant's history. Expose the affected
+  // eras to the page instead of making an empty result look like no history.
+  const failedArchives = (q.data ?? []).flatMap((result, i) =>
+    result.status === "success" ? [] : [archivedDeployments[i]],
+  );
+
+  return { ...q, campaigns, failedArchives };
 }
 
 export function useLegacyCampaign(archive?: ArchivedDeployment, id?: bigint) {

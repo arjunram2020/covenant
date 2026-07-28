@@ -3,6 +3,7 @@ pragma solidity ^0.8.20;
 
 import "@openzeppelin/contracts/access/Ownable.sol";
 import "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
+import "@openzeppelin/contracts/utils/Pausable.sol";
 import "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
 
@@ -26,8 +27,13 @@ import "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
  *
  * Approval authority is configured per campaign:
  *   - WeightedApproval: any donor may vote, weighted by how much USDC they've
- *     personally donated to this campaign; releases once the approving
- *     weight reaches the campaign's configured percentage of total raised.
+ *     personally donated to this campaign (capped per voter at
+ *     MAX_VOTER_WEIGHT_BPS of the snapshot taken at submission time);
+ *     releases once the approving weight reaches the campaign's configured
+ *     percentage of that snapshot AND at least MIN_WEIGHTED_APPROVERS
+ *     distinct donors have voted yes. This does not make Sybil resistance
+ *     absolute — it raises the cost from "one wallet" to "several
+ *     well-funded wallets" (see docs/CONTRACT_SECURITY_REVIEW.md).
  *   - DesignatedReviewers: an explicit reviewer set + threshold (committee
  *     when threshold > 1).
  *   - PlatformOperator: the contract owner (grant administrator / platform).
@@ -45,11 +51,22 @@ import "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
  * donations (totalReleased + amount <= totalRaised), so one campaign can
  * never be paid out of another campaign's escrow.
  */
-contract Covenant is ReentrancyGuard, Ownable {
+contract Covenant is ReentrancyGuard, Ownable, Pausable {
     using SafeERC20 for IERC20;
 
     uint256 public constant MAX_MILESTONES = 5;
     uint256 public constant MAX_REVIEWERS = 7;
+    /// @notice WeightedApproval hardening (see docs/CONTRACT_SECURITY_REVIEW.md H1):
+    ///         no single voter's counted weight can exceed this share of the
+    ///         submission's weight snapshot, and at least this many distinct
+    ///         donor addresses must vote yes before a release fires. Neither
+    ///         alone stops a determined multi-wallet Sybil, but together they
+    ///         force an attacker to control several well-funded wallets rather
+    ///         than one — raising the cost of self-approval instead of a
+    ///         single sockpuppet donation.
+    uint256 public constant MAX_VOTER_WEIGHT_BPS = 5000; // 50%
+    uint256 private constant BPS_DENOMINATOR = 10000;
+    uint256 public constant MIN_WEIGHTED_APPROVERS = 2;
     /// @notice How long reviewers have to act on a submission before the
     ///         campaign can be failed and donors refunded. Runs from the
     ///         later of the submission time and the proof deadline.
@@ -121,7 +138,9 @@ contract Covenant is ReentrancyGuard, Ownable {
         MilestoneState state;
         uint32 submissionCount;   // proof packages submitted so far
         uint8 approvalCount;      // approvals for the latest submission (count-based models)
-        uint256 approvedWeight;   // approving donor weight for the latest submission (WeightedApproval)
+        uint256 approvedWeight;   // approving donor weight for the latest submission (WeightedApproval), per-voter capped
+        uint256 weightSnapshot;   // totalRaised at submission time — the WeightedApproval denominator (M4 fix)
+        uint8 weightedApproverCount; // distinct donors who voted yes on the latest submission (WeightedApproval)
         uint64 revisionDeadline;  // set on rejection: resubmit by this time or fail
         bool released;
     }
@@ -260,6 +279,25 @@ contract Covenant is ReentrancyGuard, Ownable {
         emit CreatorApprovalChanged(creator, approved);
     }
 
+    /**
+     * @notice Emergency circuit breaker. Pausing halts money inflows and
+     *         milestone releases — new campaigns, donations, and proof reviews —
+     *         so an operator can stop a suspected exploit. It deliberately does
+     *         NOT block claimRefund, cancelCampaign, submitProof, or
+     *         failCampaign: donors and creators can always exit or recover funds
+     *         even while paused. The owner cannot ever move or seize escrow.
+     *
+     *         The owner SHOULD be a multisig (e.g. Gnosis Safe) so this power is
+     *         not a single-key risk — see docs/CONTRACT_SECURITY_REVIEW.md.
+     */
+    function pause() external onlyOwner {
+        _pause();
+    }
+
+    function unpause() external onlyOwner {
+        _unpause();
+    }
+
     // -------------------------------------------------------------------------
     // Write functions
     // -------------------------------------------------------------------------
@@ -270,7 +308,7 @@ contract Covenant is ReentrancyGuard, Ownable {
         CampaignKind kind,
         ApprovalConfig calldata approval,
         MilestoneInput[] calldata items
-    ) external returns (uint256 campaignId) {
+    ) external whenNotPaused returns (uint256 campaignId) {
         if (!approvedCreators[msg.sender]) {
             require(
                 _creatorStats[msg.sender].campaignsCreated < FREE_CAMPAIGNS,
@@ -317,6 +355,8 @@ contract Covenant is ReentrancyGuard, Ownable {
                     submissionCount: 0,
                     approvalCount: 0,
                     approvedWeight: 0,
+                    weightSnapshot: 0,
+                    weightedApproverCount: 0,
                     revisionDeadline: 0,
                     released: false
                 })
@@ -381,7 +421,11 @@ contract Covenant is ReentrancyGuard, Ownable {
      * @param amount USDC base units; the donor must have approve()d at least
      *        this much to the contract beforehand.
      */
-    function donate(uint256 campaignId, uint256 amount) external campaignExists(campaignId) {
+    function donate(uint256 campaignId, uint256 amount)
+        external
+        campaignExists(campaignId)
+        whenNotPaused
+    {
         Campaign storage c = _campaigns[campaignId];
         require(c.active, "Campaign not active");
         // A campaign past its milestone deadline is headed for cancellation;
@@ -457,6 +501,10 @@ contract Covenant is ReentrancyGuard, Ownable {
         m.state = MilestoneState.Submitted;
         m.approvalCount = 0;
         m.approvedWeight = 0;
+        m.weightedApproverCount = 0;
+        // Snapshot the denominator now, not at vote time: a donation landing
+        // mid-review can no longer shift the approval bar (M4 fix).
+        m.weightSnapshot = c.totalRaised;
         m.submissionCount += 1;
         _creatorStats[c.creator].proofSubmissions += 1;
 
@@ -473,7 +521,7 @@ contract Covenant is ReentrancyGuard, Ownable {
         uint256 campaignId,
         bool approve,
         string calldata notes
-    ) external campaignExists(campaignId) nonReentrant {
+    ) external campaignExists(campaignId) nonReentrant whenNotPaused {
         Campaign storage c = _campaigns[campaignId];
         require(c.active, "Campaign not active");
         require(isReviewer(campaignId, msg.sender), "Not an authorized reviewer");
@@ -517,15 +565,26 @@ contract Covenant is ReentrancyGuard, Ownable {
         }
 
         if (_approvals[campaignId].model == ApprovalModel.WeightedApproval) {
-            // Weighted by how much USDC this voter has personally donated.
-            // Uses the *current* totalRaised as the denominator — donations
-            // landing mid-vote can shift the bar; a hard snapshot would need
-            // its own design (see docs). Existing votes' recorded weight
-            // isn't affected either way.
-            m.approvedWeight += donations[campaignId][msg.sender];
+            // Weighted by how much USDC this voter has personally donated,
+            // against the snapshot taken when this proof was submitted (M4
+            // fix) — a donation landing mid-review can no longer move the
+            // bar. Each voter's counted weight is capped at
+            // MAX_VOTER_WEIGHT_BPS of that snapshot, and release additionally
+            // requires MIN_WEIGHTED_APPROVERS distinct yes-votes (H1
+            // hardening): together these mean one wallet — even a creator's
+            // sockpuppet — can never single-handedly release the escrow.
+            // This raises the cost of self-approval; it cannot fully remove
+            // it for money-weighted voting (see docs/CONTRACT_SECURITY_REVIEW.md).
+            uint256 snapshotTotal = m.weightSnapshot;
+            uint256 voterWeight = donations[campaignId][msg.sender];
+            uint256 cap = (snapshotTotal * MAX_VOTER_WEIGHT_BPS) / BPS_DENOMINATOR;
+            if (voterWeight > cap) voterWeight = cap;
+            m.approvedWeight += voterWeight;
+            m.weightedApproverCount += 1;
             if (
-                c.totalRaised > 0 &&
-                m.approvedWeight * 100 >= c.totalRaised * _approvals[campaignId].threshold
+                snapshotTotal > 0 &&
+                m.approvedWeight * 100 >= snapshotTotal * _approvals[campaignId].threshold &&
+                m.weightedApproverCount >= MIN_WEIGHTED_APPROVERS
             ) {
                 _releaseMilestone(campaignId, c, m, mi);
             }
@@ -706,6 +765,28 @@ contract Covenant is ReentrancyGuard, Ownable {
         list = new Campaign[](campaignCount);
         for (uint256 i = 0; i < campaignCount; i++) {
             list[i] = _campaigns[i];
+        }
+    }
+
+    /**
+     * @notice Paginated campaign reads (L3 hardening). `getAllCampaigns()`
+     *         grows unbounded with campaign count and can time out an RPC at
+     *         scale; this lets a client page through instead. Returns
+     *         campaigns [offset, offset + limit) in creation order, and the
+     *         total campaign count so a client knows when it's reached the end.
+     */
+    function getCampaignsPage(uint256 offset, uint256 limit)
+        external
+        view
+        returns (Campaign[] memory list, uint256 total)
+    {
+        total = campaignCount;
+        if (offset >= total) return (new Campaign[](0), total);
+        uint256 end = offset + limit;
+        if (end > total) end = total;
+        list = new Campaign[](end - offset);
+        for (uint256 i = offset; i < end; i++) {
+            list[i - offset] = _campaigns[i];
         }
     }
 

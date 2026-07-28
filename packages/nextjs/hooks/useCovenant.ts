@@ -1,9 +1,11 @@
 "use client";
 
 import { useCallback, useEffect } from "react";
-import { erc20Abi } from "viem";
+import { erc20Abi, type Abi, type PublicClient } from "viem";
 import {
+  useAccount,
   useChainId,
+  usePublicClient,
   useReadContract,
   useSwitchChain,
   useWaitForTransactionReceipt,
@@ -256,6 +258,61 @@ export function useMilestoneFailed(id?: bigint) {
   return { ...q, failed: (q.data as boolean | undefined) ?? false };
 }
 
+/**
+ * Pre-compute gas and EIP-1559 fee caps through the app's own transport (the
+ * same-origin /api/rpc proxy) and hand the wallet a fully-specified
+ * transaction.
+ *
+ * Why: MetaMask prepares transactions through its own built-in RPC (Infura,
+ * for Base). When that connection is blocked in the user's browser (adblock
+ * lists, VPN, an Infura hiccup) every write dies with
+ * "RPC 0x2105 Infura eth_getBlockByNumber: Failed to fetch" before the
+ * confirmation sheet even opens — even though the app's own RPC path is fine.
+ * Supplying gas + fee caps removes those wallet-side estimation calls from
+ * the critical path. (Broadcast still goes through the wallet's RPC; nothing
+ * app-side can change that.)
+ *
+ * Failure semantics matter here:
+ *  - A REVERT during estimation means the transaction would fail on-chain —
+ *    rethrow it, with the real revert reason, instead of letting the user pay
+ *    for a doomed transaction.
+ *  - A NETWORK error during estimation must not become a new single point of
+ *    failure — return {} and let the wallet estimate as before.
+ */
+async function prepareWriteGas(
+  publicClient: PublicClient | undefined,
+  call: {
+    account?: `0x${string}`;
+    address: `0x${string}`;
+    abi: Abi;
+    functionName: string;
+    args: unknown[];
+  },
+): Promise<{ gas?: bigint; maxFeePerGas?: bigint; maxPriorityFeePerGas?: bigint }> {
+  if (!publicClient || !call.account) return {};
+
+  const params: { gas?: bigint; maxFeePerGas?: bigint; maxPriorityFeePerGas?: bigint } = {};
+  try {
+    const gas = await publicClient.estimateContractGas(call as never);
+    // Estimation runs against the latest block; state can shift before
+    // inclusion, so pad 20% rather than sending an exact-fit limit.
+    params.gas = (gas * 120n) / 100n;
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    if (/revert|execution reverted/i.test(msg)) throw err;
+    return {};
+  }
+  try {
+    const fees = await publicClient.estimateFeesPerGas();
+    params.maxFeePerGas = fees.maxFeePerGas;
+    params.maxPriorityFeePerGas = fees.maxPriorityFeePerGas;
+  } catch {
+    // Fee caps are optional — with a gas limit already set, the wallet can
+    // still price the transaction on its own.
+  }
+  return params;
+}
+
 export type CovenantFn =
   | "createCampaign"
   | "donate"
@@ -269,6 +326,8 @@ export function useCovenantWrite() {
   const { address, abi, chainId, writeEnabled } = useReadChain();
   const connectedChainId = useChainId();
   const { switchChainAsync } = useSwitchChain();
+  const { address: account } = useAccount();
+  const publicClient = usePublicClient({ chainId });
   const queryClient = useQueryClient();
   const { writeContractAsync, data: hash, isPending, error, reset } = useWriteContract();
   const {
@@ -288,16 +347,24 @@ export function useCovenantWrite() {
       if (connectedChainId !== chainId) {
         await switchChainAsync({ chainId });
       }
+      const gasParams = await prepareWriteGas(publicClient, {
+        account,
+        address,
+        abi: abi as Abi,
+        functionName,
+        args,
+      });
       const txHash = await writeContractAsync({
         address,
         abi,
         functionName,
         args,
         chainId,
+        ...gasParams,
       } as any);
       return txHash;
     },
-    [address, abi, chainId, connectedChainId, switchChainAsync, writeContractAsync, writeEnabled],
+    [account, address, abi, chainId, connectedChainId, publicClient, switchChainAsync, writeContractAsync, writeEnabled],
   );
 
   const refresh = useCallback(() => {
@@ -325,6 +392,7 @@ export function useUsdc(owner?: `0x${string}`) {
   const usdcAddress = getUsdcAddress(chainId);
   const connectedChainId = useChainId();
   const { switchChainAsync } = useSwitchChain();
+  const publicClient = usePublicClient({ chainId });
 
   const allowanceQ = useReadContract({
     address: usdcAddress,
@@ -373,15 +441,23 @@ export function useUsdc(owner?: `0x${string}`) {
       if (connectedChainId !== chainId) {
         await switchChainAsync({ chainId });
       }
+      const gasParams = await prepareWriteGas(publicClient, {
+        account: owner,
+        address: usdcAddress,
+        abi: erc20Abi as Abi,
+        functionName: "approve",
+        args: [covenantAddress, amount],
+      });
       return writeContractAsync({
         address: usdcAddress,
         abi: erc20Abi,
         functionName: "approve",
         args: [covenantAddress, amount],
         chainId,
+        ...gasParams,
       });
     },
-    [usdcAddress, covenantAddress, chainId, connectedChainId, switchChainAsync, writeContractAsync, writeEnabled],
+    [usdcAddress, covenantAddress, chainId, connectedChainId, owner, publicClient, switchChainAsync, writeContractAsync, writeEnabled],
   );
 
   return {

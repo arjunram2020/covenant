@@ -22,7 +22,7 @@ import {
   verifyManifest,
   type ProofManifest,
 } from "../lib/proofManifest";
-import { fetchManifest } from "../lib/evidenceRegistry";
+import { fetchManifest, fetchEncryptedManifest } from "../lib/evidenceRegistry";
 
 /**
  * Reviewer workflow: the campaign's configured approvers evaluate the latest
@@ -74,15 +74,24 @@ export function ReviewPanel({
 
   const threshold = config?.threshold ?? 1;
   const isWeighted = config?.model === ApprovalModel.WeightedApproval;
-  // Approved-weight as a percent of total raised (WeightedApproval only).
+  // Must mirror Covenant.sol's WeightedApproval hardening (H1/M4) so the projected
+  // percentage/approver count shown here matches what the contract will actually do.
+  const MIN_WEIGHTED_APPROVERS = 2;
+  const MAX_VOTER_WEIGHT_BPS = 5000n; // 50%
+  // The denominator is the snapshot taken at submission time, not live totalRaised.
+  const snapshot = milestone?.weightSnapshot ?? 0n;
+  const cappedMyDonation = snapshot > 0n && myDonation * 10000n > snapshot * MAX_VOTER_WEIGHT_BPS
+    ? (snapshot * MAX_VOTER_WEIGHT_BPS) / 10000n
+    : myDonation;
   const approvedPct =
-    milestone && campaign.totalRaised > 0n
-      ? Number((milestone.approvedWeight * 10000n) / campaign.totalRaised) / 100
-      : 0;
+    milestone && snapshot > 0n ? Number((milestone.approvedWeight * 10000n) / snapshot) / 100 : 0;
   const projectedPct =
-    milestone && campaign.totalRaised > 0n
-      ? Number(((milestone.approvedWeight + myDonation) * 10000n) / campaign.totalRaised) / 100
+    milestone && snapshot > 0n
+      ? Number(((milestone.approvedWeight + cappedMyDonation) * 10000n) / snapshot) / 100
       : 0;
+  const projectedApproverCount = (milestone?.weightedApproverCount ?? 0) + 1;
+  const weightedReleasesNow =
+    projectedPct >= threshold && projectedApproverCount >= MIN_WEIGHTED_APPROVERS;
 
   const review = async (approve: boolean) => {
     try {
@@ -136,7 +145,7 @@ export function ReviewPanel({
               </p>
               <span className="pill bg-violet-600/10 text-violet-700">
                 {isWeighted
-                  ? `${approvedPct}% / ${threshold}% approved`
+                  ? `${approvedPct}% / ${threshold}% · ${milestone.weightedApproverCount}/${MIN_WEIGHTED_APPROVERS} donors`
                   : `${milestone.approvalCount}/${threshold} approvals`}
               </span>
             </div>
@@ -220,14 +229,21 @@ export function ReviewPanel({
                       ? "Submitting review…"
                       : decision === "approve"
                         ? isWeighted
-                          ? projectedPct >= threshold
+                          ? weightedReleasesNow
                             ? "Approve — releases this milestone's funds"
-                            : `Approve (adds your weight — ${projectedPct}%/${threshold}%)`
+                            : `Approve (adds your weight — ${projectedPct}%/${threshold}%, ${projectedApproverCount}/${MIN_WEIGHTED_APPROVERS} donors)`
                           : milestone.approvalCount + 1 >= threshold
                             ? "Approve — releases this milestone's funds"
                             : `Approve (${milestone.approvalCount + 1}/${threshold})`
                         : "Reject & send back for revision"}
                   </button>
+                  {isWeighted && decision === "approve" && (
+                    <p className="mt-1 text-xs text-[var(--text-tertiary)]">
+                      Your vote is capped at 50% of the raised-funds snapshot, and at least{" "}
+                      {MIN_WEIGHTED_APPROVERS} distinct donors must approve before this milestone
+                      can release — one donor can never release it alone.
+                    </p>
+                  )}
                 </div>
               )}
               <div className="mt-2 min-h-[1.25rem]">
@@ -310,29 +326,83 @@ function ManifestViewer({ submission }: { submission: ProofSubmission }) {
     },
   });
 
+  // Encrypted (private) evidence: the reviewer supplies a capability link — via
+  // the ?ev= URL param when they opened the creator's link, or by pasting it.
+  // We decrypt it in-browser and verify against the on-chain plaintext hash.
+  const [capInput, setCapInput] = useState("");
+  const [capManifest, setCapManifest] = useState<ProofManifest | null>(null);
+  const [capError, setCapError] = useState(false);
+  const [capChecking, setCapChecking] = useState(false);
+
+  const tryCapability = async (cap: string) => {
+    if (!cap.trim()) return;
+    setCapChecking(true);
+    setCapError(false);
+    const m = await fetchEncryptedManifest(cap, submission.manifestHash);
+    setCapChecking(false);
+    if (m) setCapManifest(m);
+    else setCapError(true);
+  };
+
+  // Auto-attempt from the URL when no public copy was found.
+  useEffect(() => {
+    if (data || capManifest) return;
+    const fromUrl =
+      typeof window !== "undefined" ? window.location.href.match(/[?#]ev=([^&\s]+)/) : null;
+    if (fromUrl) void tryCapability(decodeURIComponent(fromUrl[1]));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [data]);
+
   if (isLoading) {
     return <p className="text-xs text-[var(--text-tertiary)]">Loading proof package…</p>;
   }
 
-  if (!data) {
+  if (!data && !capManifest) {
     return (
       <div className="rounded-xl border border-dashed border-[var(--border-primary)] px-4 py-3 text-xs text-[var(--text-secondary)]">
-        <p className="font-medium text-[var(--text-primary)]">Private proof package</p>
+        <p className="font-medium text-[var(--text-primary)]">🔒 Private (encrypted) proof package</p>
         <p className="mt-1">
-          The full package isn&apos;t published on-chain and isn&apos;t in the evidence registry.
-          Ask the creator for the package file, then verify it matches the on-chain fingerprint:
+          This package isn&apos;t public. If the creator shared a private access link with you,
+          paste it here — it&apos;s decrypted in your browser and checked against the on-chain
+          fingerprint. You can also ask for the package file and verify it against:
         </p>
         <p className="mt-1 break-all font-mono">{submission.manifestHash}</p>
+        <div className="mt-2 flex items-center gap-2">
+          <input
+            className="input flex-1 text-xs"
+            placeholder="Paste the private evidence link or token"
+            value={capInput}
+            onChange={(e) => {
+              setCapInput(e.target.value);
+              setCapError(false);
+            }}
+          />
+          <button
+            type="button"
+            className="btn-secondary shrink-0 text-xs"
+            disabled={!capInput.trim() || capChecking}
+            onClick={() => void tryCapability(capInput)}
+          >
+            {capChecking ? "Checking…" : "Unlock"}
+          </button>
+        </div>
+        {capError && (
+          <p className="mt-1 text-amber-700">
+            Couldn&apos;t unlock with that link — check you pasted the full link, or the package may
+            not have reached the registry.
+          </p>
+        )}
       </div>
     );
   }
 
-  const m = data.manifest;
+  const m = (data?.manifest ?? capManifest) as ProofManifest;
+  const source = data?.source ?? "encrypted link (off-chain)";
   return (
     <div className="rounded-xl border border-[var(--border-primary)] px-4 py-3 text-sm">
       <div className="flex items-center justify-between">
         <p className="text-xs uppercase tracking-wide text-[var(--text-tertiary)]">
-          Proof package · {data.source}
+          Proof package · {source}
         </p>
         <span className="pill bg-emerald-600/10 text-xs text-emerald-700">
           ✓ integrity verified
