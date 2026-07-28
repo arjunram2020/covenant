@@ -6,7 +6,8 @@
     "dev": "next dev",
     "build": "next build",
     "start": "next start",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "smoke": "node scripts/smoke-hydration.mjs"
   },
   "dependencies": {
     "@rainbow-me/rainbowkit": "^2.1.7",
@@ -24,6 +25,7 @@
     "@types/react-dom": "^18.3.0",
     "autoprefixer": "^10.4.20",
     "postcss": "^8.4.47",
+    "puppeteer-core": "^23",
     "tailwindcss": "^3.4.13",
     "typescript": "^5.6.2"
   }

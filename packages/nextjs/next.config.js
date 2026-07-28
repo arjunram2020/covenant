@@ -14,12 +14,18 @@
 // Narrow connect-src to the deployment's actual RPC + relay hosts once they're
 // pinned, and verify the wallet-connect flow (MetaMask + WalletConnect QR)
 // after any CSP change — a misconfigured connect-src silently breaks RPC calls.
+// Next.js dev mode (react-refresh/HMR) evaluates strings at runtime; without
+// 'unsafe-eval' the entire client bundle throws before React hydrates and the
+// app renders as inert SSR HTML (no wallet button, no data, dead forms).
+// Production builds don't use eval, so the directive stays strict there.
+const isDev = process.env.NODE_ENV !== "production";
+
 const CSP = [
   "default-src 'self'",
-  "script-src 'self' 'unsafe-inline'",
-  "style-src 'self' 'unsafe-inline'",
+  `script-src 'self' 'unsafe-inline'${isDev ? " 'unsafe-eval'" : ""}`,
+  "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com",
   "img-src 'self' data: https:",
-  "font-src 'self' data:",
+  "font-src 'self' data: https://fonts.gstatic.com",
   "connect-src 'self' https: wss:",
   "frame-src 'self' https://verify.walletconnect.com https://verify.walletconnect.org",
   "frame-ancestors 'none'",

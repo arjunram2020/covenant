@@ -85,9 +85,10 @@ export async function PUT(
   }
 
   // No indexer configured server-side: report "no registry" so the client keeps
-  // its localStorage-only tier instead of treating this as a hard error.
+  // its localStorage-only tier instead of treating this as a hard error. The
+  // client keys off the 204 status alone; a 204 must not carry a body.
   if (!INDEXER_URL) {
-    return NextResponse.json({ ok: false, tier: "none" }, { status: 204 });
+    return new NextResponse(null, { status: 204 });
   }
 
   const declaredLen = Number(req.headers.get("content-length") ?? 0);
@@ -122,7 +123,14 @@ export async function PUT(
   if (WRITE_TOKEN) headers.Authorization = `Bearer ${WRITE_TOKEN}`;
 
   try {
-    const res = await fetch(target, { method: "PUT", headers, body });
+    const res = await fetch(target, {
+      method: "PUT",
+      headers,
+      body,
+      // Never let a hung indexer hold a serverless invocation open (same guard
+      // as the RPC proxy route).
+      signal: AbortSignal.timeout(15_000),
+    });
     const text = await res.text();
     return new NextResponse(text, {
       status: res.status,

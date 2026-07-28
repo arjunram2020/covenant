@@ -31,7 +31,10 @@
       "Bash(grep -E \"\\\\.env$\")",
       "WebFetch(domain:sfstartuplabs.com)",
       "Bash(git log *)",
-      "Bash(grep -rn *)"
+      "Bash(grep -rn *)",
+      "Bash(grep -Ei \"\\\\.env|\\\\.db$|\\\\.pem|key\")",
+      "Bash(lsof -nP -iTCP:3000 -sTCP:LISTEN)",
+      "Bash(lsof -nP -iTCP:8545 -sTCP:LISTEN)"
     ]
   },
   "remote": {

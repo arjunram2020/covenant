@@ -44,6 +44,39 @@ jobs:
       - name: Run contract tests (incl. security suite)
         run: yarn workspace @covenant/hardhat test
 
+  hydration-smoke:
+    # Guard against "the page renders but the app is dead": builds the real
+    # production bundle (with its strict CSP), serves it, and loads every page
+    # in headless Chrome. Fails if any page throws (e.g. a CSP violation) or if
+    # React never hydrates (no ConnectButton in the header). This is the gate
+    # that catches CSP/header changes that typecheck and build can't see —
+    # exactly what silently broke the whole frontend on 2026-07-27.
+    name: Hydration smoke (prod build + CSP)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: "yarn"
+      - name: Install
+        run: yarn install --frozen-lockfile
+      - name: Build (production)
+        run: yarn workspace @covenant/nextjs build
+      - name: Start prod server
+        working-directory: packages/nextjs
+        run: |
+          nohup npx next start -p 3010 > /tmp/next-start.log 2>&1 &
+          for i in $(seq 1 30); do
+            curl -sf http://localhost:3010 > /dev/null && exit 0
+            sleep 1
+          done
+          echo "server never came up" && cat /tmp/next-start.log && exit 1
+      - name: Smoke test (headless Chrome)
+        working-directory: packages/nextjs
+        run: node scripts/smoke-hydration.mjs http://localhost:3010
+
   audit:
     name: Dependency audit (high+)
     runs-on: ubuntu-latest
