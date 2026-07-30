@@ -1,6 +1,7 @@
 import type { Abi } from "viem";
 import { formatUnits } from "viem";
 import legacy from "../contracts/legacyContract.json";
+import usdcReview from "../contracts/archiveUsdcReview.json";
 
 /**
  * Retired TraceFund/Covenant deployments on Base Mainnet, kept strictly
@@ -145,6 +146,16 @@ export const archivedDeployments: ArchivedDeployment[] = [
     address: "0xe11CE961Ff378B5D5172DE6ABfE8c16f900e10F3",
     abi: AUTORELEASE_READ_ABI,
     deployBlock: 48139854n,
+    symbol: "USDC",
+    formatAmount: (v) => trimAmount(v, 6, 6),
+  },
+  {
+    key: "review",
+    label: "USDC · review era",
+    note: "The first reviewer-gated USDC contract (retired to archive its early test campaigns).",
+    address: usdcReview.address as `0x${string}`,
+    abi: usdcReview.abi as Abi,
+    deployBlock: BigInt(usdcReview.deployBlock),
     symbol: "USDC",
     formatAmount: (v) => trimAmount(v, 6, 6),
   },

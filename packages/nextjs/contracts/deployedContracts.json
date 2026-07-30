@@ -1,8 +1,8 @@
 {
   "8453": {
     "Covenant": {
-      "address": "0xB31D06627E249282Ec2a7e17efcebae55F934F29",
-      "deployBlock": 48208634,
+      "address": "0x39D24f893958859541B0b06DD8FE1259D7383680",
+      "deployBlock": 49260404,
       "abi": [
         {
           "inputs": [
@@ -1015,6 +1015,11 @@
                   "type": "uint8"
                 },
                 {
+                  "internalType": "uint256",
+                  "name": "approvedWeight",
+                  "type": "uint256"
+                },
+                {
                   "internalType": "uint64",
                   "name": "revisionDeadline",
                   "type": "uint64"
@@ -1101,6 +1106,11 @@
                   "internalType": "uint8",
                   "name": "approvalCount",
                   "type": "uint8"
+                },
+                {
+                  "internalType": "uint256",
+                  "name": "approvedWeight",
+                  "type": "uint256"
                 },
                 {
                   "internalType": "uint64",
@@ -1290,25 +1300,6 @@
               "internalType": "uint256",
               "name": "",
               "type": "uint256"
-            }
-          ],
-          "stateMutability": "view",
-          "type": "function"
-        },
-        {
-          "inputs": [
-            {
-              "internalType": "uint256",
-              "name": "",
-              "type": "uint256"
-            }
-          ],
-          "name": "leadDonor",
-          "outputs": [
-            {
-              "internalType": "address",
-              "name": "",
-              "type": "address"
             }
           ],
           "stateMutability": "view",
