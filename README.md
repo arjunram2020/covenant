@@ -39,6 +39,10 @@ campaign's escrow.
 | Deployment | AWS EC2 + Nginx + PM2 |
 | Base framework | Scaffold-ETH 2 |
 
+The browser never talks to a third-party RPC directly — all JSON-RPC goes
+through a same-origin proxy (`app/api/rpc/[chainId]`) so provider keys never
+ship to the client and the app isn't at the mercy of an Origin allowlist.
+
 ---
 
 ## Project Structure
@@ -53,12 +57,22 @@ covenant/
 │   │   │   └── seed.ts
 │   │   └── test/
 │   ├── indexer/              # Base event indexer, SQLite cache, HTTP API
+│   │   └── README.md         # Indexer-specific run/deploy notes
+│   ├── loadtest/             # Seed data + simulated actors/browser load
 │   └── nextjs/               # Frontend app
-│       ├── app/              # Next.js pages
+│       ├── app/              # Next.js pages + API routes
+│       │   └── api/
+│       │       ├── rpc/[chainId]/       # Same-origin RPC proxy (see above)
+│       │       ├── evidence/[locator]/  # Authenticated evidence write proxy
+│       │       └── draft-milestones/    # Draft milestone helper endpoint
 │       ├── components/       # UI components
 │       ├── contracts/
 │       │   └── deployedContracts.json   # Contract address + ABI
-│       └── hooks/            # Contract interaction hooks
+│       ├── hooks/            # Contract interaction hooks
+│       └── scripts/
+│           └── smoke-hydration.mjs      # CI hydration/CSP smoke test
+├── docs/                     # AWS, security, SOC 2 readiness, and architecture docs
+└── SECURITY.md               # Vulnerability reporting policy
 ```
 
 ---
@@ -125,11 +139,22 @@ git push
 
 ## Environment Variables (Hosted Frontend)
 
-| Variable | Value |
-|---|---|
-| `NEXT_PUBLIC_DEFAULT_CHAIN_ID` | `8453` |
-| `NEXT_PUBLIC_WALLETCONNECT_PROJECT_ID` | from [cloud.walletconnect.com](https://cloud.walletconnect.com) |
-| `NEXT_PUBLIC_BASE_RPC_URL` | your dedicated Base RPC URL |
+Every `NEXT_PUBLIC_*` variable is inlined into the JS bundle shipped to every
+visitor — never put a provider key in one. See
+`packages/nextjs/.env.example` for the full, annotated list; the essentials:
+
+| Variable | Where it lives | Value |
+|---|---|---|
+| `NEXT_PUBLIC_DEFAULT_CHAIN_ID` | client | `8453` for Base mainnet |
+| `NEXT_PUBLIC_WALLETCONNECT_PROJECT_ID` | client | from [cloud.walletconnect.com](https://cloud.walletconnect.com) |
+| `NEXT_PUBLIC_INDEXER_URL` | client | public URL of the indexer API (see `packages/indexer`) |
+| `BASE_RPC_URL` | **server only** | your dedicated Base RPC/provider URL — used by the `/api/rpc/[chainId]` proxy; leave unset to fall back to the keyless public RPC |
+| `EVIDENCE_WRITE_TOKEN` | **server only** | must match `EVIDENCE_WRITE_TOKEN` in `packages/indexer/.env`; lets the evidence write proxy authenticate without exposing the token to the browser |
+
+Leave the `NEXT_PUBLIC_*_RPC_URL` variables empty unless you have a genuinely
+public, unrestricted RPC endpoint — a key-bearing URL in a `NEXT_PUBLIC_*`
+var is visible to every visitor, and a provider Origin allowlist will break
+the app on any host you didn't list (Vercel domain, phone, tunnel).
 
 For AWS, create these in `packages/nextjs/.env.local` **before** building the
 frontend, as shown in [AWS deployment Stage 7](docs/AWS_DEPLOYMENT.md#stage-7--configure-build-and-start-nextjs).
@@ -152,6 +177,35 @@ The `Covenant.sol` contract stores everything on-chain:
 | `createCampaign` | Creator | Creates a campaign with milestones |
 | `donate` | Donor | Sends ETH into escrow |
 | `submitEvidence` | Creator | Submits proof for the current (funded) milestone and releases its funds |
+
+---
+
+## Testing & CI
+
+Every PR runs three gates (`.github/workflows/ci.yml`):
+
+| Job | Checks |
+|---|---|
+| Typecheck | `yarn workspace @covenant/nextjs typecheck` |
+| Contracts | Hardhat compile + test suite (incl. security tests) |
+| Hydration smoke | Builds the production bundle with the real CSP, serves it, and loads every page in headless Chrome — catches "page renders but the app is dead" failures that typecheck/build can't see |
+
+Any change to `packages/nextjs/next.config.js` headers or the CSP must be
+verified locally first:
+
+```bash
+yarn workspace @covenant/nextjs smoke                        # against yarn start
+yarn workspace @covenant/nextjs build && npx next start -p 3010 &
+yarn workspace @covenant/nextjs smoke http://localhost:3010   # against a prod build
+```
+
+## Security
+
+See [SECURITY.md](SECURITY.md) for the vulnerability reporting process and
+[docs/soc2/](docs/soc2/README.md) for Covenant's honest SOC 2 readiness status.
+Deeper architecture and threat-model notes live under [docs/](docs/), including
+`EVIDENCE_SECURITY_MODEL.md`, `CONTRACT_SECURITY_REVIEW.md`, and
+`SECURE_CONFIGURATION.md`.
 
 ---
 
