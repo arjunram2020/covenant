@@ -43,12 +43,11 @@ export interface Milestone {
   state: MilestoneStateValue;
   submissionCount: number;
   approvalCount: number;
-  /** Sum of (per-voter capped) donations from approving voters on the latest submission (WeightedApproval). */
-  approvedWeight: bigint;
-  /** totalRaised snapshotted when the latest submission was made — the WeightedApproval denominator. */
-  weightSnapshot: bigint;
-  /** Distinct donor addresses who voted yes on the latest submission (WeightedApproval). */
-  weightedApproverCount: number;
+  /** Sum of donations from approving voters on the latest submission (WeightedApproval). */
+  // Optional: the deployed Base contract predates this field, so getMilestones
+  // returns structs without it. Treat missing as 0n — never do BigInt math on
+  // it without the ?? 0n fallback (mixing undefined with BigInt throws).
+  approvedWeight?: bigint;
   /** Set when a reviewer rejects: the creator must resubmit by this time. */
   revisionDeadline: bigint;
   released: boolean;
