@@ -13,10 +13,10 @@
     "restore:verify": "node scripts/restore.mjs --verify-only"
   },
   "dependencies": {
-    "better-sqlite3": "^11.3.0",
+    "better-sqlite3": "^13.0.1",
     "cors": "^2.8.5",
-    "dotenv": "^16.4.5",
-    "express": "^4.21.0",
+    "dotenv": "^17.4.2",
+    "express": "^5.2.1",
     "viem": "^2.21.0"
   }
 }
