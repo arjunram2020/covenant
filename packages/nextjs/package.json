@@ -12,21 +12,21 @@
   "dependencies": {
     "@rainbow-me/rainbowkit": "^2.1.7",
     "@tanstack/react-query": "^5.59.0",
-    "lucide-react": "^0.451.0",
-    "next": "^14.2.13",
-    "react": "^18.3.1",
-    "react-dom": "^18.3.1",
+    "lucide-react": "^1.27.0",
+    "next": "^16.2.12",
+    "react": "^19.2.8",
+    "react-dom": "^19.2.8",
     "viem": "^2.21.19",
-    "wagmi": "^2.12.17"
+    "wagmi": "^3.7.4"
   },
   "devDependencies": {
-    "@types/node": "^20.16.10",
-    "@types/react": "^18.3.11",
-    "@types/react-dom": "^18.3.0",
+    "@types/node": "^26.1.2",
+    "@types/react": "^19.2.17",
+    "@types/react-dom": "^19.2.3",
     "autoprefixer": "^10.4.20",
     "postcss": "^8.4.47",
-    "puppeteer-core": "^23",
-    "tailwindcss": "^3.4.13",
-    "typescript": "^5.6.2"
+    "puppeteer-core": "^25",
+    "tailwindcss": "^4.3.3",
+    "typescript": "^7.0.2"
   }
 }
