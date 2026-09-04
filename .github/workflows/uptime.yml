@@ -78,7 +78,7 @@ jobs:
       # run — so the signal is "an open issue exists," not a growing pile of them.
       - name: Update tracking issue
         if: always() && (vars.HEALTH_URL != '' || vars.SITE_URL != '')
-        uses: actions/github-script@v7
+        uses: actions/github-script@v9
         with:
           script: |
             const indexerOutcome = "${{ steps.indexer.outcome }}";
